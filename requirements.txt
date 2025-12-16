@@ -1,3 +1,8 @@
 mlflow
 pytest
 scikit-learn
+
+fastapi
+uvicorn
+flake8
+mlflow
