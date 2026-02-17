@@ -24,10 +24,18 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run linter
+      - name: Run Black formatter check
+        run: |
+          black --check src/ tests/
+
+      - name: Run Mypy type checker
+        run: |
+          mypy src/
+
+      - name: Run linter (Flake8)
         run: |
           flake8 src/
 
-      - name: Run tests
+      - name: Run tests with coverage
         run: |
-          pytest
+          pytest --cov=src tests/ --cov-report=term-missing
