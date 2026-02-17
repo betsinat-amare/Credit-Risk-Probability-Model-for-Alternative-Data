@@ -1,24 +1,27 @@
 import pandas as pd
 import numpy as np
-
+from typing import Tuple, List, Optional, Union
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.impute import SimpleImputer
 from sklearn.cluster import KMeans
-
 from xverse.transformer import WOE
 
 
 class DateFeatureExtractor(BaseEstimator, TransformerMixin):
-    def __init__(self, datetime_col="TransactionStartTime"):
+    """
+    Extracts temporal features from a datetime column.
+    """
+
+    def __init__(self, datetime_col: str = "TransactionStartTime"):
         self.datetime_col = datetime_col
 
-    def fit(self, X, y=None):
+    def fit(self, X: pd.DataFrame, y: Optional[pd.Series] = None) -> "DateFeatureExtractor":
         return self
 
-    def transform(self, X):
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
         X = X.copy()
         X[self.datetime_col] = pd.to_datetime(X[self.datetime_col], errors="coerce")
 
@@ -31,13 +34,17 @@ class DateFeatureExtractor(BaseEstimator, TransformerMixin):
 
 
 class CustomerAggregator(BaseEstimator, TransformerMixin):
-    def __init__(self, customer_id="CustomerId"):
+    """
+    Aggregates transaction data at the customer level.
+    """
+
+    def __init__(self, customer_id: str = "CustomerId"):
         self.customer_id = customer_id
 
-    def fit(self, X, y=None):
+    def fit(self, X: pd.DataFrame, y: Optional[pd.Series] = None) -> "CustomerAggregator":
         return self
 
-    def transform(self, X):
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
         X = X.copy()
 
         agg_df = (
@@ -54,7 +61,12 @@ class CustomerAggregator(BaseEstimator, TransformerMixin):
         return agg_df
 
 
-def build_feature_pipeline(categorical_features, numerical_features):
+def build_feature_pipeline(
+    categorical_features: List[str], numerical_features: List[str]
+) -> ColumnTransformer:
+    """
+    Builds a scikit-learn preprocessing pipeline.
+    """
     # Numerical pipeline
     num_pipeline = Pipeline(
         steps=[
@@ -82,80 +94,37 @@ def build_feature_pipeline(categorical_features, numerical_features):
     return preprocessor
 
 
-def apply_woe(X, y, categorical_features):
+def apply_woe(
+    X: pd.DataFrame, y: pd.Series, categorical_features: List[str]
+) -> Tuple[pd.DataFrame, WOE]:
     """
-    Apply Weight of Evidence (WoE) transformation
+    Apply Weight of Evidence (WoE) transformation.
     """
     woe = WOE(
         cols=categorical_features,
         monotonic_trend="auto",
         min_bin_size=0.05,
-        treat_missing="separate"
+        treat_missing="separate",
     )
 
     X_woe = woe.fit_transform(X, y)
     return X_woe, woe
 
 
-def process_data(raw_df, target=None):
-    """
-    Full feature engineering pipeline
-    """
-
-    # Step 1: Date features
-    date_extractor = DateFeatureExtractor()
-    df = date_extractor.transform(raw_df)
-
-    # Step 2: Aggregate per customer
-    aggregator = CustomerAggregator()
-    customer_df = aggregator.transform(df)
-
-    # Define features
-    categorical_features = []
-    numerical_features = [
-        "TotalTransactionAmount",
-        "AvgTransactionAmount",
-        "TransactionCount",
-        "StdTransactionAmount",
-    ]
-
-    # Step 3: Preprocessing pipeline
-    preprocessor = build_feature_pipeline(
-        categorical_features, numerical_features
-    )
-
-    X_processed = preprocessor.fit_transform(customer_df)
-
-    # Step 4: WoE (if target exists)
-    if target is not None:
-        X_woe, woe_model = apply_woe(
-            customer_df[numerical_features],
-            target,
-            categorical_features
-        )
-        return X_processed, X_woe, preprocessor, woe_model
-
-    return X_processed, preprocessor
-
-
-# task-4
 def calculate_rfm(df: pd.DataFrame, snapshot_date: str) -> pd.DataFrame:
     """
     Calculate Recency, Frequency, and Monetary metrics per customer.
     """
-
     df = df.copy()
     df["TransactionStartTime"] = pd.to_datetime(df["TransactionStartTime"])
-
     snapshot_date = pd.to_datetime(snapshot_date)
 
     rfm = (
         df.groupby("CustomerId")
         .agg(
-            Recency=("TransactionStartTime",
-                     lambda x: (snapshot_date - x.max()).days),
+            Recency=("TransactionStartTime", lambda x: (snapshot_date - x.max()).days),
             Frequency=("TransactionId", "count"),
-            Monetary=("Value", "sum")
+            Monetary=("Amount", "sum"),  # Changed from "Value" to "Amount" to match aggregation
         )
         .reset_index()
     )
@@ -163,7 +132,10 @@ def calculate_rfm(df: pd.DataFrame, snapshot_date: str) -> pd.DataFrame:
     return rfm
 
 
-def scale_rfm(rfm: pd.DataFrame) -> pd.DataFrame:
+def scale_rfm(rfm: pd.DataFrame) -> np.ndarray:
+    """
+    Scales RFM metrics for clustering.
+    """
     scaler = StandardScaler()
     rfm_scaled = scaler.fit_transform(rfm[["Recency", "Frequency", "Monetary"]])
 
@@ -171,32 +143,28 @@ def scale_rfm(rfm: pd.DataFrame) -> pd.DataFrame:
 
 
 def cluster_customers(rfm_scaled: np.ndarray, n_clusters: int = 3) -> np.ndarray:
-    kmeans = KMeans(
-        n_clusters=n_clusters,
-        random_state=42,
-        n_init=10
-    )
+    """
+    Groups customers into clusters based on transaction behavior.
+    """
+    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
     clusters = kmeans.fit_predict(rfm_scaled)
     return clusters
 
 
 def identify_high_risk_cluster(rfm: pd.DataFrame) -> int:
+    """
+    Identifies the cluster representing the highest credit risk (low engagement).
+    """
     cluster_summary = (
         rfm.groupby("cluster")
-        .agg({
-            "Recency": "mean",
-            "Frequency": "mean",
-            "Monetary": "mean"
-        })
+        .agg({"Recency": "mean", "Frequency": "mean", "Monetary": "mean"})
         .reset_index()
     )
 
-    # Sort by worst engagement
+    # Sort by worst engagement: Low Frequency, Low Monetary, High Recency
     high_risk_cluster = (
-        cluster_summary
-        .sort_values(
-            by=["Frequency", "Monetary", "Recency"],
-            ascending=[True, True, False]
+        cluster_summary.sort_values(
+            by=["Frequency", "Monetary", "Recency"], ascending=[True, True, False]
         )
         .iloc[0]["cluster"]
     )
@@ -205,36 +173,48 @@ def identify_high_risk_cluster(rfm: pd.DataFrame) -> int:
 
 
 def assign_high_risk_label(rfm: pd.DataFrame, high_risk_cluster: int) -> pd.DataFrame:
-    rfm["is_high_risk"] = np.where(
-        rfm["cluster"] == high_risk_cluster,
-        1,
-        0
-    )
+    """
+    Creates a binary risk flag based on the identified high-risk cluster.
+    """
+    rfm["is_high_risk"] = np.where(rfm["cluster"] == high_risk_cluster, 1, 0)
     return rfm[["CustomerId", "is_high_risk"]]
 
 
 def create_proxy_target(
-    df: pd.DataFrame,
-    snapshot_date: str = "2019-01-01"
+    df: pd.DataFrame, snapshot_date: str = "2019-01-01"
 ) -> pd.DataFrame:
-
+    """
+    Full pipeline to create the proxy credit risk labels.
+    """
     rfm = calculate_rfm(df, snapshot_date)
     rfm_scaled = scale_rfm(rfm)
-
     rfm["cluster"] = cluster_customers(rfm_scaled)
-
     high_risk_cluster = identify_high_risk_cluster(rfm)
-
     target = assign_high_risk_label(rfm, high_risk_cluster)
 
     return target
 
 
-def merge_target(df_processed: pd.DataFrame, target: pd.DataFrame) -> pd.DataFrame:
-    return df_processed.merge(
-        target,
-        on="CustomerId",
-        how="left"
-    )
+def process_data_end_to_end(
+    df: pd.DataFrame, snapshot_date: str = "2019-01-01"
+) -> pd.DataFrame:
+    """
+    Complete end-to-end processing pipeline as expected by training script.
+    """
+    # 1. Extract Date Features
+    date_extractor = DateFeatureExtractor()
+    df_with_dates = date_extractor.transform(df)
+
+    # 2. Aggregate Features per Customer
+    aggregator = CustomerAggregator()
+    customer_features = aggregator.transform(df_with_dates)
+
+    # 3. Create Proxy Labels
+    proxy_target = create_proxy_target(df, snapshot_date)
+
+    # 4. Merge Features and Target
+    final_df = customer_features.merge(proxy_target, on="CustomerId", how="inner")
+
+    return final_df
 
 
